@@ -23,6 +23,11 @@ namespace Azure.Sdk.Tools.PipelineWitness
         public string BuildLogBundlesQueueName { get; set; }
 
         /// <summary>
+        /// Gets or sets the name of the definition changed bundles queue
+        /// </summary>
+        public string DefinitionChangedQueueName { get; set; }
+
+        /// <summary>
         /// Gets or sets the number of build logs to add to each log bundle message
         /// </summary>
         public int BuildLogBundleSize { get; set; } = 50;
