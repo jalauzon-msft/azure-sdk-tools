@@ -51,5 +51,20 @@ namespace Azure.Sdk.Tools.PipelineWitness
         /// Gets or sets the number of times a message can be dequeued before being moved to the poison message queue
         /// </summary>
         public long MaxDequeueCount { get; set; } = 5;
+
+        /// <summary>
+        /// Gets or sets the list of projects to work with
+        /// </summary>
+        public string[] Projects { get; set; }
+
+        /// <summary>
+        /// Gets or sets the account to work with
+        /// </summary>
+        public string Account { get; set; }
+
+        /// <summary>
+        /// Gets or sets the amount of time between iterations of the build definition upload loop
+        /// </summary>
+        public TimeSpan BuildDefinitionLoopPeriod { get; set; } = TimeSpan.FromMinutes(5);
     }
 }

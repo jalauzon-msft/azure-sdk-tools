@@ -29,12 +29,16 @@ namespace Azure.Sdk.Tools.PipelineWitness.Services.FailureAnalysis
 
             if (failures.Count == 0)
             {
-                var failedRecords = timeline.Records.Any(x => x.Result == TaskResult.Failed);
                 if (build.Result != BuildResult.Succeeded && 
-                    build.Result != BuildResult.Canceled && 
-                    failedRecords)
+                    build.Result != BuildResult.Canceled)
                 {
-                    failures.Add(new Failure("Global", "Unknown"));
+                    foreach (var records in timeline.Records)
+                    {
+                        if (records.Result == TaskResult.Failed)
+                        {
+                            failures.Add(new Failure(records, "Unknown"));
+                        }
+                    }
                 }
             }
 

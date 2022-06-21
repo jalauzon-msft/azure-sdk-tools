@@ -23,3 +23,4 @@ namespace Azure.Sdk.Tools.PipelineWitness.Entities.AzurePipelines
         public string Classification { get; set; }
     }
 }
+

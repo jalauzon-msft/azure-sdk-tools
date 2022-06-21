@@ -35,7 +35,8 @@ namespace Azure.Sdk.Tools.PipelineWitness.Services.FailureAnalysis
                 if (parent == null)
                 {
                     break;
-                } else
+                }
+                else
                 {
                     current = parent;
                 }

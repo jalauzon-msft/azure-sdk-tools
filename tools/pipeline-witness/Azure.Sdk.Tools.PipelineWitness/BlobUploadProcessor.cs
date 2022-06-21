@@ -2,6 +2,7 @@
 {
     using System;
     using System.Collections.Generic;
+    using System.Collections.Immutable;
     using System.IO;
     using System.Linq;
     using System.Net;
@@ -29,6 +30,8 @@
         private const string BuildsContainerName = "builds";
         private const string BuildLogLinesContainerName = "buildloglines";
         private const string BuildTimelineRecordsContainerName = "buildtimelinerecords";
+        private const string BuildDefinitionsContainerName = "builddefinitions";
+        private const string BuildFailuresContainerName = "buildfailures";
         private const string TestRunsContainerName = "testruns";
 
         private const string TimeFormat = @"yyyy-MM-dd\THH:mm:ss.fffffff\Z";
@@ -47,9 +50,13 @@
         private readonly BlobContainerClient buildsContainerClient;
         private readonly BlobContainerClient buildTimelineRecordsContainerClient;
         private readonly BlobContainerClient testRunsContainerClient;
+        private readonly BlobContainerClient buildDefinitionsContainerClient;
+        private readonly BlobContainerClient buildFailuresContainerClient;
         private readonly QueueClient queueClient;
         private readonly IOptions<PipelineWitnessSettings> options;
+        private readonly HashSet<string> knownBlobs = new HashSet<string>();
         private readonly IFailureAnalyzer failureAnalyzer;
+        
 
         public BlobUploadProcessor(
             ILogger<BlobUploadProcessor> logger,
@@ -79,6 +86,8 @@
             this.buildsContainerClient = blobServiceClient.GetBlobContainerClient(BuildsContainerName);
             this.buildTimelineRecordsContainerClient = blobServiceClient.GetBlobContainerClient(BuildTimelineRecordsContainerName);
             this.buildLogLinesContainerClient = blobServiceClient.GetBlobContainerClient(BuildLogLinesContainerName);
+            this.buildDefinitionsContainerClient = blobServiceClient.GetBlobContainerClient(BuildDefinitionsContainerName);
+            this.buildFailuresContainerClient = blobServiceClient.GetBlobContainerClient(BuildFailuresContainerName);
             this.testRunsContainerClient = blobServiceClient.GetBlobContainerClient(TestRunsContainerName);
             this.queueClient = queueServiceClient.GetQueueClient(this.options.Value.BuildLogBundlesQueueName);
             this.queueClient.CreateIfNotExists();
@@ -161,7 +170,7 @@
                 await UploadTimelineBlobAsync(account, build, timeline);
             }
 
-            await UploadBuildFailuresAsync(account, build, timeline);
+            await UploadBuildFailureBlobAsync(account, build, timeline);
 
             var logs = await buildClient.GetBuildLogsAsync(build.Project.Id, build.Id);
 
@@ -187,13 +196,13 @@
             }
         }
 
-        private async Task UploadBuildFailuresAsync(string account, Build build, Timeline timeline)
+        private async Task UploadBuildFailureBlobAsync(string account, Build build, Timeline timeline)
         {
 
             try
             {
                 var blobPath = $"{build.Project.Name}/{build.FinishTime:yyyy/MM/dd}/{build.Id}.jsonl";
-                var blobClient = this.failuresContainerClient.GetBlobClient(blobPath);
+                var blobClient = this.buildFailuresContainerClient.GetBlobClient(blobPath);
 
                 if (await blobClient.ExistsAsync())
                 {
@@ -204,75 +213,26 @@
                 var failures = await this.failureAnalyzer.AnalyzeFailureAsync(build, timeline);
                 if (!failures.Any())
                 {
-                    return; 
+                    return;
                 }
 
                 var stringBuilder = new StringBuilder();
 
                 foreach (var failure in failures)
                 {
-                    var contentLine = JsonConvert.SerializeObject(new
-                    {
-                        OrganizationName = account,
-                        ProjectId = build.Project?.Id,
-                        BuildId = build.Id,
-                        DefinitionId = build.Definition?.Id,
-                        RepositoryId = build.Repository?.Id,
-                        BuildNumber = build.BuildNumber,
-                        BuildNumberRevision = build.BuildNumberRevision,
-                        DefinitionName = build.Definition?.Name,
-                        DefinitionPath = build.Definition?.Path,
-                        DefinitionProjectId = build.Definition?.Project?.Id,
-                        DefinitionProjectName = build.Definition?.Project?.Name,
-                        DefinitionProjectRevision = build.Definition?.Project?.Revision,
-                        DefinitionProjectState = build.Definition?.Project?.State,
-                        DefinitionRevision = build.Definition?.Revision,
-                        DefinitionType = build.Definition?.Type,
-                        QueueTime = build.QueueTime,
-                        StartTime = build.StartTime,
-                        FinishTime = build.FinishTime,
-                        KeepForever = build.KeepForever,
-                        LastChangedByDisplayName = build.LastChangedBy?.DisplayName,
-                        LastChangedById = build.LastChangedBy?.Id,
-                        LastChangedByIsContainer = build.LastChangedBy?.IsContainer,
-                        LastChangedByUniqueName = build.LastChangedBy?.UniqueName,
-                        LastChangedDate = build.LastChangedDate,
-                        LogsId = build.Logs?.Id,
-                        LogsType = build.Logs?.Type,
-                        OrchestrationPlanId = build.OrchestrationPlan?.PlanId,
-                        Parameters = build.Parameters,
-                        PlanId = build.Plans?.FirstOrDefault()?.PlanId,
-                        Priority = build.Priority,
-                        ProjectName = build.Project?.Name,
-                        ProjectRevision = build.Project?.Revision,
-                        ProjectState = build.Project?.State,
-                        QueueId = build.Queue?.Id,
-                        QueueName = build.Queue?.Name,
-                        QueuePoolId = build.Queue?.Pool?.Id,
-                        QueuePoolName = build.Queue?.Pool?.Name,
-                        Reason = build.Reason,
-                        RepositoryCheckoutSubmodules = build.Repository?.CheckoutSubmodules,
-                        RepositoryType = build.Repository?.Type,
-                        RequestedByDisplayName = build.RequestedBy?.DisplayName,
-                        RequestedById = build.RequestedBy?.Id,
-                        RequestedByIsContainer = build.RequestedBy?.IsContainer,
-                        RequestedByUniqueName = build.RequestedBy?.UniqueName,
-                        RequestedForDisplayName = build.RequestedFor?.DisplayName,
-                        RequestedForId = build.RequestedFor?.Id,
-                        RequestedForIsContainer = build.RequestedFor?.IsContainer,
-                        RequestedForUniqueName = build.RequestedFor?.UniqueName,
-                        Result = build.Result,
-                        RetainedByRelease = build.RetainedByRelease,
-                        SourceBranch = build.SourceBranch,
-                        SourceVersion = build.SourceVersion,
-                        Status = build.Status,
-                        Tags = build.Tags?.Any() == true ? JsonConvert.SerializeObject(build.Tags, jsonSettings) : null,
-                        Uri = build.Uri,
-                        ValidationResults = build.ValidationResults,
-                        Data = JsonConvert.SerializeObject(build, jsonSettings),
-                        EtlIngestDate = DateTime.UtcNow,
-                    }, jsonSettings);
-                    stringBuilder.AppendLine(contentLine);
+                   
+                        var contentLine = JsonConvert.SerializeObject(new
+                        {
+                            BuildId = build.Id,
+                            BuildRevision = build.BuildNumberRevision,
+                            ProjectId = build.Project.Id,
+                            OrganizationName = build.Project.Name,
+                            RecordId = failure.Record.Id,
+                            BuildTimelineId = timeline.Id,
+                            ErrorClassification = failure.Classification,
+                        }, jsonSettings);
+                        stringBuilder.AppendLine(contentLine);
+                    
                 }
 
                 await blobClient.UploadAsync(new BinaryData(stringBuilder.ToString()));
@@ -296,6 +256,111 @@
                 await UploadLogLinesBlobAsync(buildLogBundle, log);
             }
         }
+
+        public async Task UploadBuildDefinitionBlobsAsync(string account, string projectName)
+        {
+            var definitions = await buildClient.GetFullDefinitionsAsync2(project: projectName);
+
+            foreach (var definition in definitions)
+            {
+                await UploadBuildDefinitionBlobAsync(account, definition);
+            }
+        }
+
+        private async Task UploadBuildDefinitionBlobAsync(string account, BuildDefinition definition)
+        {
+            var blobPath = $"{definition.Project.Name}/{definition.Id}-{definition.Revision}.jsonl";
+
+            try
+            {
+                var blobClient = this.buildDefinitionsContainerClient.GetBlobClient(blobPath);
+                var alreadySeen = this.knownBlobs.Contains(blobPath);
+
+                if (alreadySeen || await blobClient.ExistsAsync())
+                {
+                    this.knownBlobs.Add(blobPath);
+                    this.logger.LogInformation("Skipping existing build definition blob for build {DefinitionId} project {Project}", definition.Id, definition.Project.Name);
+                    return;
+                }
+
+                this.logger.LogInformation("Creating blob for build definition {DefinitionId} revision {Revision} project {Project}", definition.Id, definition.Revision, definition.Project.Name);
+
+                var content = JsonConvert.SerializeObject(new
+                {
+                    OrganizationName = account,
+                    ProjectId = definition.Project.Id,
+                    BuildDefinitionId = definition.Id,
+                    BuildDefinitionRevision = definition.Revision,
+                    BuildDefinitionName = definition.Name,
+                    Path = definition.Path,
+                    RepositoryId = definition.Repository.Id,
+                    RepositoryName = definition.Repository.Name,
+                    AuthoredByDescriptor = definition.AuthoredBy.Descriptor.ToString(),
+                    AuthoredByDisplayName = definition.AuthoredBy.DisplayName,
+                    AuthoredById = definition.AuthoredBy.Id,
+                    AuthoredByIsContainer = definition.AuthoredBy.IsContainer,
+                    AuthoredByUniqueName = definition.AuthoredBy.UniqueName,
+                    CreatedDate = definition.CreatedDate,
+                    DefaultBranch = definition.Repository.DefaultBranch,
+                    DraftOfId = default(string),
+                    DraftOfName = default(string),
+                    DraftOfProjectId = default(string),
+                    DraftOfProjectName = default(string),
+                    DraftOfProjectRevision = default(string),
+                    DraftOfProjectState = default(string),
+                    DraftOfProjectVisibility = default(string),
+                    DraftOfQueueStatus = default(string),
+                    DraftOfRevision = default(string),
+                    DraftOfType = default(string),
+                    DraftOfUri = default(string),
+                    ProjectName = definition.Project.Name,
+                    ProjectRevision = definition.Project.Revision,
+                    ProjectState = definition.Project.State,
+                    Quality = definition.DefinitionQuality,
+                    QueueId = definition.Queue?.Id,
+                    QueueName = definition.Queue?.Name,
+                    QueuePoolId = definition.Queue?.Pool?.Id,
+                    QueuePoolIsHosted = definition.Queue?.Pool?.IsHosted,
+                    QueuePoolName = definition.Queue?.Pool?.Name,
+                    QueueStatus = definition.QueueStatus,
+                    Type = definition.Type,
+                    Uri = definition.Uri,
+                    BadgeEnabled = definition.BadgeEnabled,
+                    BuildNumberFormat = definition.BuildNumberFormat,
+                    Comment = definition.Comment,
+                    JobAuthorizationScope = definition.JobAuthorizationScope,
+                    JobCancelTimeoutInMinutes = definition.JobCancelTimeoutInMinutes,
+                    JobTimeoutInMinutes = definition.JobTimeoutInMinutes,
+                    ProcessType = definition.Process.Type,
+                    ProcessYamlFilename = definition.Process is YamlProcess yamlprocess ? yamlprocess.YamlFilename : null,
+                    RepositoryCheckoutSubmodules = definition.Repository.CheckoutSubmodules,
+                    RepositoryClean = definition.Repository.Clean,
+                    RepositoryDefaultBranch = definition.Repository.DefaultBranch,
+                    RepositoryRootFolder = definition.Repository.RootFolder,
+                    RepositoryType = definition.Repository.Type,
+                    RepositoryUrl = definition.Repository.Url,
+                    Options = definition.Options,
+                    Variables = definition.Variables,
+                    Tags = definition.Tags,
+                    Data = definition,
+                    EtlIngestDate = DateTimeOffset.UtcNow
+                }, jsonSettings);
+
+                await blobClient.UploadAsync(new BinaryData(content));
+                this.knownBlobs.Add(blobPath);
+            }
+            catch (RequestFailedException ex) when (ex.Status == (int)HttpStatusCode.Conflict)
+            {
+                this.logger.LogInformation("Ignoring exception from existing blob for build definition {DefinitionId}", definition.Id);
+                this.knownBlobs.Add(blobPath);
+            }
+            catch (Exception ex)
+            {
+                this.logger.LogError(ex, "Error processing blob for build definition {DefinitionId}", definition.Id);
+                throw;
+            }
+        }
+
 
         private List<BuildLogBundle> BuildLogBundles(string account, Build build, Timeline timeline, List<BuildLog> logs)
         {
