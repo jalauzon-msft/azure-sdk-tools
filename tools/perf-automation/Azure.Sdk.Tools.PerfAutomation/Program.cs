@@ -221,6 +221,9 @@ namespace Azure.Sdk.Tools.PerfAutomation
                 profileDirectory = Directory.CreateDirectory(Util.GetProfileDirectory(options.RepoRoot));
             }
 
+            var resultsDirectory = Path.Join(Path.GetTempPath(), Path.GetRandomFileName());
+            Directory.CreateDirectory(resultsDirectory);
+
             foreach (var packageVersions in selectedPackageVersions)
             {
                 await RunPackageVersion(
@@ -234,6 +237,7 @@ namespace Azure.Sdk.Tools.PerfAutomation
                     outputCsv,
                     outputTxt,
                     outputMd,
+                    resultsDirectory,
                     results);
             }
 
@@ -254,6 +258,7 @@ namespace Azure.Sdk.Tools.PerfAutomation
             string outputCsv,
             string outputTxt,
             string outputMd,
+            string resultsDirectory,
             List<Result> results)
         {
             var language = options.Language;
@@ -346,13 +351,20 @@ namespace Azure.Sdk.Tools.PerfAutomation
                         await WriteResults(outputJson, outputCsv, outputTxt, outputMd, results);
                         if (setupException == null)
                         {
+                            // Create results directory for this test test/argument combo
+                            string testResultsDir = Path.Join(resultsDirectory, Guid.NewGuid().ToString());
+                            Directory.CreateDirectory(testResultsDir);
+
                             for (var i = 0; i < options.Iterations; i++)
                             {
                                 IterationResult iterationResult;
                                 try
                                 {
+                                    string testReultsFile = Path.Join(testResultsDir, $"results_{i}.json");
+                                    string testArguments = allArguments + $" --test-results-file {testReultsFile}";
+
                                     Console.WriteLine($"RunAsync({project}, {languageVersion}, " +
-                                        $"{test.Class}, {allArguments}, {context}, {options.Profile}, {options.ProfilerOptions})");
+                                        $"{test.Class}, {testArguments}, {context}, {options.Profile}, {options.ProfilerOptions})");
                                     Console.WriteLine();
 
                                     iterationResult = await _languages[language].RunAsync(
@@ -361,7 +373,7 @@ namespace Azure.Sdk.Tools.PerfAutomation
                                         primaryPackage,
                                         packageVersions,
                                         test.Class,
-                                        allArguments,
+                                        testArguments,
                                         options.Profile,
                                         options.ProfilerOptions,
                                         context);
@@ -386,9 +398,10 @@ namespace Azure.Sdk.Tools.PerfAutomation
                                 }
 
                                 result.Iterations.Add(iterationResult);
-
-                                await WriteResults(outputJson, outputCsv, outputTxt, outputMd, results);
                             }
+
+                            await AddLatencyResults(testResultsDir, result);
+                            await WriteResults(outputJson, outputCsv, outputTxt, outputMd, results);
                         }
 
                         result.End = DateTime.Now;
@@ -405,12 +418,38 @@ namespace Azure.Sdk.Tools.PerfAutomation
                     try
                     {
                         await _languages[language].CleanupAsync(project);
+                        Directory.Delete(resultsDirectory, recursive: true);
                     }
                     catch (Exception e)
                     {
                         Console.WriteLine(e);
                         Console.WriteLine();
                     }
+                }
+            }
+        }
+
+        private static async Task AddLatencyResults(string testResultsPath, Result result)
+        {
+            IEnumerable<OperationResult> allResults = new List<OperationResult>();
+
+            string[] resultsFiles = Directory.GetFiles(testResultsPath);
+            foreach (string resultsFile in resultsFiles)
+            {
+                using Stream fileStream = File.OpenRead(resultsFile);
+                allResults = allResults.Concat(await JsonSerializer.DeserializeAsync<IEnumerable<OperationResult>>(fileStream));
+            }
+
+            OperationResult[] sortedResults = allResults.OrderBy(r => r.ExecutionTime).ToArray();
+
+            if (sortedResults.Length > 0)
+            {
+                result.LatencyP50 = sortedResults[(int)(sortedResults.Length * 0.5) - 1].ExecutionTime.TotalMilliseconds;
+                result.LatencyP99 = sortedResults[(int)(sortedResults.Length * 0.99) - 1].ExecutionTime.TotalMilliseconds;
+
+                if (sortedResults[0].Size != -1)
+                {
+                    result.ThroughputMean = sortedResults.Select(r => r.Size / r.ExecutionTime.TotalSeconds).Average();
                 }
             }
         }
@@ -463,16 +502,22 @@ namespace Azure.Sdk.Tools.PerfAutomation
 
                 var operationsPerSecondMax = new List<(string version, double operationsPerSecond)>();
                 var operationsPerSecondMean = new List<(string version, double operationsPerSecond)>();
+                var cpuMean = new List<(string version, double cpu)>();
+                var memoryInMBMean = new List<(string version, double memoryInMB)>();
 
                 foreach (var result in g)
                 {
                     var primaryPackageVersion = result.PackageVersions?[resultSummary.PrimaryPackage];
                     operationsPerSecondMax.Add((primaryPackageVersion, result.OperationsPerSecondMax));
                     operationsPerSecondMean.Add((primaryPackageVersion, result.OperationsPerSecondMean));
+                    cpuMean.Add((primaryPackageVersion, result.CpuMean));
+                    memoryInMBMean.Add((primaryPackageVersion, result.MemoryInMBMean));
                 }
 
                 resultSummary.OperationsPerSecondMax = operationsPerSecondMax;
                 resultSummary.OperationsPerSecondMean = operationsPerSecondMean;
+                resultSummary.CpuMean = cpuMean;
+                resultSummary.MemoryInMBMean = memoryInMBMean;
 
                 return resultSummary;
             });
@@ -485,6 +530,9 @@ namespace Azure.Sdk.Tools.PerfAutomation
 
                 await WriteResultsSummaryThroughput(streamWriter, group, "Mean", r => r.OperationsPerSecondMean,
                     r => r.OperationsPerSecondMeanDifferences, outputFormat);
+
+                await WriteResultsSummaryStats("Average CPU %", streamWriter, group, r => r.CpuMean, outputFormat);
+                await WriteResultsSummaryStats("Average Memory (MB)", streamWriter, group, r => r.MemoryInMBMean, outputFormat);
 
                 await WriteHeader(streamWriter, "Package Versions", outputFormat);
 
@@ -585,6 +633,46 @@ namespace Azure.Sdk.Tools.PerfAutomation
                         .Zip(operationsPerSecondDifferencesStrings, (f, s) => new[] { f, s }).SelectMany(f => f));
 
                     row.AddRange(values);
+
+                    rowSet.Add(row);
+                }
+                table.Add(rowSet);
+            }
+
+            await streamWriter.WriteLineAsync(TableGenerator.Generate(headers.ToList(), table, outputFormat));
+        }
+
+        private static async Task WriteResultsSummaryStats(
+            string header,
+            StreamWriter streamWriter,
+            IEnumerable<ResultSummary> resultSummaries,
+            Func<ResultSummary, IEnumerable<(string version, double statistic)>> statistic,
+            OutputFormat outputFormat)
+        {
+            var versions = statistic(resultSummaries.First()).Select(o => o.version);
+            var headers = versions;
+
+            var testGroups = resultSummaries.GroupBy(g => g.Test);
+
+            await WriteHeader(streamWriter, header, outputFormat);
+
+            headers = headers.Prepend("Arguments").Prepend("Test");
+
+            var table = new List<IList<IList<string>>>();
+
+            foreach (var testGroup in testGroups)
+            {
+                var rowSet = new List<IList<string>>();
+                foreach (var resultSummary in testGroup)
+                {
+                    var row = new List<string>
+                    {
+                        resultSummary.Test,
+                        resultSummary.Arguments
+                    };
+                    var cpuStrings = statistic(resultSummary).Select(o => o.statistic.ToString("N2"));
+
+                    row.AddRange(cpuStrings);
 
                     rowSet.Add(row);
                 }

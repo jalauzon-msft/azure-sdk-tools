@@ -1,6 +1,8 @@
-﻿using Microsoft.Crank.Agent;
+﻿using Azure.Sdk.Tools.PerfAutomation.Models;
+using Microsoft.Crank.Agent;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -87,6 +89,101 @@ namespace Azure.Sdk.Tools.PerfAutomation
             {
                 return result;
             }
+        }
+
+        public static async Task<ProcessResultWithStats> RunWithStatsAsync(
+            string filename,
+            string arguments,
+            string workingDirectory)
+        {
+            if (IsWindows && _requiresShellOnWindows.Contains(filename))
+            {
+                arguments = $"/c {filename} {arguments}";
+                filename = "cmd";
+            }
+
+            using var process = new Process()
+            {
+                StartInfo =
+                {
+                    FileName = filename,
+                    Arguments = arguments,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    WorkingDirectory = workingDirectory,
+                },
+                EnableRaisingEvents = true
+            };
+
+            var outputBuilder = new StringBuilder();
+            process.OutputDataReceived += (_, e) =>
+            {
+                if (e.Data != null)
+                {
+                    outputBuilder.AppendLine(e.Data);
+                    Log.WriteLine(e.Data);
+                }
+            };
+
+            var errorBuilder = new StringBuilder();
+            process.ErrorDataReceived += (_, e) =>
+            {
+                if (e.Data != null)
+                {
+                    errorBuilder.AppendLine(e.Data);
+                    Log.WriteLine("[STDERR] " + e.Data);
+                }
+            };
+            process.Start();
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+
+            var stopwatch = Stopwatch.StartNew();
+            TimeSpan lastCpuTime = TimeSpan.Zero;
+            List<double> cpuSamples = new();
+            List<long> memorySamples = new();
+
+            while (!process.HasExited)
+            {
+                await Task.Delay(1000);
+
+                try
+                {
+                    // CPU usage
+                    TimeSpan currentCpuTime = process.TotalProcessorTime;
+                    double cpuUsage = (currentCpuTime - lastCpuTime).TotalMilliseconds / (1000.0 * Environment.ProcessorCount) * 100;
+                    lastCpuTime = currentCpuTime;
+                    cpuSamples.Add(cpuUsage);
+
+                    // Memory usage
+                    process.Refresh(); // Refresh to get updated memory info
+                    long memoryUsage = process.WorkingSet64;
+                    memorySamples.Add(memoryUsage);
+                }
+                catch (InvalidOperationException)
+                {
+                    // Process may have exited while checking stats, ignore
+                }
+            }
+
+            stopwatch.Stop();
+
+            double avgCpu = cpuSamples.Count > 0 ? cpuSamples.Average() : 0;
+            double avgMemoryInMB = memorySamples.Count > 0 ? memorySamples.Average() / 1024.0 / 1024.0 : 0;
+
+            Console.WriteLine($"Average CPU Usage: {avgCpu:F2}%");
+            Console.WriteLine($"Average Memory Usage: {avgMemoryInMB:F2} MB");
+
+            return new ProcessResultWithStats()
+            {
+                ExitCode = process.ExitCode,
+                StandardOutput = outputBuilder.ToString(),
+                StandardError = errorBuilder.ToString(),
+                AvgCpu = avgCpu,
+                AvgMemoryInMB = avgMemoryInMB,
+            };
         }
 
         public static void DeleteIfExists(string path)

@@ -29,6 +29,12 @@ namespace Azure.Sdk.Tools.PerfAutomation.Models
         public double OperationsPerSecondMean => Iterations.Any() ? Iterations.Average(i => i.OperationsPerSecond) : -1;
         public double OperationsPerSecondMedian => Iterations.Any() ? Median(Iterations.Select(i => i.OperationsPerSecond)) : -1;
         public double OperationsPerSecondMax => Iterations.Any() ? Iterations.Max(i => i.OperationsPerSecond) : -1;
+        public double CpuMean => Iterations.Count != 0 ? Iterations.Average(i => i.AvgCpu) : -1;
+        public double MemoryInMBMean => Iterations.Count != 0 ? Iterations.Average(i => i.AvgMemoryInMB) : -1;
+
+        public double LatencyP50 { get; set; } = -1;
+        public double LatencyP99 { get; set; } = -1;
+        public double ThroughputMean { get; set; } = -1;
 
         private double Median(IEnumerable<double> values)
         {

@@ -136,30 +136,40 @@ namespace Microsoft.Crank.Agent
 
             var cancelledTcs = new TaskCompletionSource<object>();
             await using var _ = cancellationToken.Register(() => cancelledTcs.TrySetResult(null));
+            Task timeoutTask = Task.Delay(timeout.HasValue ? (int)timeout.Value.TotalMilliseconds : -1);
 
-            var result = await Task.WhenAny(processLifetimeTask.Task, cancelledTcs.Task, Task.Delay(timeout.HasValue ? (int)timeout.Value.TotalMilliseconds : -1));
-
-            if (result != processLifetimeTask.Task)
+            while (true)
             {
-                if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                var delayTask = Task.Delay(100);
+                var completedTask = await Task.WhenAny(processLifetimeTask.Task, cancelledTcs.Task, timeoutTask, delayTask);
+
+                if (completedTask == processLifetimeTask.Task)
                 {
-                    sys_kill(process.Id, sig: 2); // SIGINT
-
-                    var cancel = new CancellationTokenSource();
-
-                    await Task.WhenAny(processLifetimeTask.Task, Task.Delay(TimeSpan.FromSeconds(5), cancel.Token));
-
-                    cancel.Cancel();
+                    break;
                 }
-
-                if (!process.HasExited)
+                else if (completedTask == cancelledTcs.Task || completedTask == timeoutTask)
                 {
-                    process.CloseMainWindow();
+                    if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                    {
+                        sys_kill(process.Id, sig: 2); // SIGINT
+
+                        var cancel = new CancellationTokenSource();
+
+                        await Task.WhenAny(processLifetimeTask.Task, Task.Delay(TimeSpan.FromSeconds(5), cancel.Token));
+
+                        cancel.Cancel();
+                    }
 
                     if (!process.HasExited)
                     {
-                        process.Kill();
+                        process.CloseMainWindow();
+
+                        if (!process.HasExited)
+                        {
+                            process.Kill();
+                        }
                     }
+                    break;
                 }
             }
 

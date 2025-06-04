@@ -115,6 +115,8 @@ namespace Azure.Sdk.Tools.PerfAutomation
                 ? await Util.RunAsync("dotnet-trace", $"collect --format NetTrace --show-child-io --output {GetProfileOutputFile(testName, arguments)} -- dotnet {dllPath} {testName} {arguments}", WorkingDirectory, throwOnError: false)
                 : await Util.RunAsync("dotnet", $"{dllPath} {testName} {arguments}", WorkingDirectory, throwOnError: false);
 
+            //var result = await Util.RunWithStatsAsync("dotnet", $"{dllPath} {testName} {arguments}", WorkingDirectory);
+
             // Completed 693,696 operations in a weighted-average of 1.00s (692,328.31 ops/s, 0.000 s/op)
             var match = Regex.Match(result.StandardOutput, @"\((.*) ops/s", RegexOptions.IgnoreCase | RegexOptions.RightToLeft);
 
@@ -130,6 +132,8 @@ namespace Azure.Sdk.Tools.PerfAutomation
                 OperationsPerSecond = opsPerSecond,
                 StandardError = result.StandardError,
                 StandardOutput = result.StandardOutput,
+                //AvgCpu = result.AvgCpu,
+                //AvgMemoryInMB = result.AvgMemoryInMB,
             };
         }
 

@@ -24,5 +24,8 @@ namespace Azure.Sdk.Tools.PerfAutomation.Models
 
         public IEnumerable<double> OperationsPerSecondMeanDifferences =>
             OperationsPerSecondMean.Zip(OperationsPerSecondMean.Skip(1), (first, second) => ((second.operationsPerSecond / first.operationsPerSecond) - 1));
+
+        public IEnumerable<(string version, double cpu)> CpuMean { get; set; }
+        public IEnumerable<(string version, double memoryInMB)> MemoryInMBMean { get; set; }
     }
 }
